@@ -6,7 +6,7 @@
 
 ```bash
 brew tap Nodaste-Lab/ltui https://github.com/Nodaste-Lab/ltui
-brew install ltui
+brew install Nodaste-Lab/ltui/ltui
 ```
 
 Verify the install:
