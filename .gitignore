@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+*.tgz
+coverage/
+.nyc_output/
+
+# ltui runtime state belongs on user machines, not in source.
+.ltui.json
