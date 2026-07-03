@@ -3,7 +3,8 @@ import path from 'node:path';
 import { getCachedValue, setCachedValue } from './cache.js';
 import { extractRateLimitInfoFromError, formatRateLimitBackoffHint } from './rateLimit.js';
 
-const CACHE_TTL_SECONDS = 300;
+const STABLE_METADATA_CACHE_TTL_SECONDS = 12 * 60 * 60;
+const USER_CACHE_TTL_SECONDS = 5 * 60;
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function isUuid(value: string): boolean {
@@ -70,7 +71,7 @@ export async function findTeamByKeyOrId(client: any, ref: string): Promise<any |
   }
 
   if (team?.id) {
-    setCachedValue('teams', normalized, team, CACHE_TTL_SECONDS);
+    setCachedValue('teams', normalized, team, STABLE_METADATA_CACHE_TTL_SECONDS);
   }
   return team;
 }
@@ -100,7 +101,7 @@ export async function findProjectByKeyOrId(client: any, ref: string): Promise<an
   });
   const project = connection.nodes[0] ?? null;
   if (project?.id) {
-    setCachedValue('projects', normalized, project.id, CACHE_TTL_SECONDS);
+    setCachedValue('projects', normalized, project.id, STABLE_METADATA_CACHE_TTL_SECONDS);
   }
   return project;
 }
@@ -138,7 +139,7 @@ export async function findWorkflowStateByNameOrId(
   });
   const state = connection.nodes[0] ?? null;
   if (state?.id) {
-    setCachedValue('workflowStates', cacheKey, state.id, CACHE_TTL_SECONDS);
+    setCachedValue('workflowStates', cacheKey, state.id, STABLE_METADATA_CACHE_TTL_SECONDS);
   }
   return state;
 }
@@ -172,7 +173,7 @@ export async function resolveLabelIds(
     for (const label of teamConnection.nodes) {
       if (label.name && label.id) {
         byName.set(label.name, label.id);
-        setCachedValue('labels', `${teamId}:${label.name.toLowerCase()}`, label.id, CACHE_TTL_SECONDS);
+        setCachedValue('labels', `${teamId}:${label.name.toLowerCase()}`, label.id, STABLE_METADATA_CACHE_TTL_SECONDS);
       }
     }
 
@@ -188,7 +189,7 @@ export async function resolveLabelIds(
       for (const label of workspaceConnection.nodes) {
         if (label.name && label.id) {
           byName.set(label.name, label.id);
-          setCachedValue('labels', `${teamId}:${label.name.toLowerCase()}`, label.id, CACHE_TTL_SECONDS);
+          setCachedValue('labels', `${teamId}:${label.name.toLowerCase()}`, label.id, STABLE_METADATA_CACHE_TTL_SECONDS);
         }
       }
     }
@@ -219,10 +220,10 @@ export async function resolveAssigneeId(client: any, ref: string): Promise<strin
     const user = connection.nodes[0];
     if (user) {
       if (user.email) {
-        setCachedValue('users', `email:${user.email.toLowerCase()}`, user.id, CACHE_TTL_SECONDS);
+        setCachedValue('users', `email:${user.email.toLowerCase()}`, user.id, USER_CACHE_TTL_SECONDS);
       }
       if (user.name) {
-        setCachedValue('users', `name:${user.name.toLowerCase()}`, user.id, CACHE_TTL_SECONDS);
+        setCachedValue('users', `name:${user.name.toLowerCase()}`, user.id, USER_CACHE_TTL_SECONDS);
       }
       return user.id;
     }
@@ -245,10 +246,10 @@ export async function resolveAssigneeId(client: any, ref: string): Promise<strin
   const user = byId.nodes[0];
   if (user) {
     if (user.email) {
-      setCachedValue('users', `email:${user.email.toLowerCase()}`, user.id, CACHE_TTL_SECONDS);
+      setCachedValue('users', `email:${user.email.toLowerCase()}`, user.id, USER_CACHE_TTL_SECONDS);
     }
     if (user.name) {
-      setCachedValue('users', `name:${user.name.toLowerCase()}`, user.id, CACHE_TTL_SECONDS);
+      setCachedValue('users', `name:${user.name.toLowerCase()}`, user.id, USER_CACHE_TTL_SECONDS);
     }
     return user.id;
   }
