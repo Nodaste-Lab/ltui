@@ -228,13 +228,20 @@ function writeBudgetState(state: Record<string, any>, identity: LinearBudgetIden
 
 function mergeBudgetState(current: Record<string, any> | null, next: Record<string, any>): Record<string, any> {
   if (!current) return next;
+  const currentReset = timeMillis(current.reset_at);
+  const nextReset = timeMillis(next.reset_at);
+  const newerResetWindow = nextReset !== null && (currentReset === null || nextReset > currentReset);
   return {
     ...current,
     ...next,
-    request_remaining: lowerNumber(current.request_remaining, next.request_remaining),
-    complexity_remaining: lowerNumber(current.complexity_remaining, next.complexity_remaining),
-    reset_at: earlierTime(current.reset_at, next.reset_at),
-    backoff_until: laterTime(current.backoff_until, next.backoff_until),
+    request_remaining: newerResetWindow
+      ? next.request_remaining ?? current.request_remaining ?? null
+      : lowerNumber(current.request_remaining, next.request_remaining),
+    complexity_remaining: newerResetWindow
+      ? next.complexity_remaining ?? current.complexity_remaining ?? null
+      : lowerNumber(current.complexity_remaining, next.complexity_remaining),
+    reset_at: newerResetWindow ? next.reset_at : earlierTime(current.reset_at, next.reset_at),
+    backoff_until: newerResetWindow ? next.backoff_until ?? null : laterTime(current.backoff_until, next.backoff_until),
   };
 }
 
@@ -253,6 +260,12 @@ function laterTime(left: any, right: any): string | null {
   if (!left) return right ?? null;
   if (!right) return left;
   return Date.parse(left) >= Date.parse(right) ? left : right;
+}
+
+function timeMillis(value: any): number | null {
+  if (!value) return null;
+  const millis = Date.parse(value);
+  return Number.isFinite(millis) ? millis : null;
 }
 
 function numberOrNull(value: string | null | undefined): number | null {

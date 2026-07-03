@@ -96,24 +96,21 @@ Add this to your agent's environment or shell profile. This is the easiest appro
 
 #### Option B: Profile-Based Configuration (Multi-Workspace)
 ```bash
-# Add a named profile
-ltui auth add personal
+# Add a named profile. If --api-key is omitted, ltui uses LINEAR_API_KEY.
+ltui auth add --profile personal --workspace personal-workspace --api-key "lin_api_..."
 
-# When prompted, paste your API key
-# This stores the key in ~/.config/ltui/profiles.json
-
-# Set as default profile
-ltui auth set-default personal
+# The first added profile becomes the default profile.
+# Credentials are stored in ~/.config/ltui/profiles.json
 ```
 
 For multiple workspaces (e.g., work and personal):
 ```bash
-ltui auth add work
-ltui auth add personal
-ltui auth set-default work
+ltui auth add --profile work --workspace work-workspace --api-key "lin_api_..."
+ltui auth add --profile personal --workspace personal-workspace --api-key "lin_api_..."
 
-# Use --profile flag to switch contexts
-ltui issues list --profile personal
+# Use the global --profile flag or LTUI_PROFILE to switch contexts
+ltui --profile personal issues list
+LTUI_PROFILE=personal ltui issues list
 ```
 
 ### 3. Test Your Configuration
@@ -136,13 +133,7 @@ When working on a codebase tied to a specific Linear project, create a `.ltui.js
 
 ```bash
 # From your project directory
-ltui projects align
-
-# This prompts for:
-# - Which Linear team this repo belongs to
-# - Which Linear project to use by default
-# - Default labels for new issues (optional)
-# - Default assignee (optional)
+ltui projects align proj-1 --profile work --team ENG --state "In Progress" --label backend --label api --assignee me
 
 # Saves to ./.ltui.json
 ```
@@ -151,11 +142,11 @@ ltui projects align
 ```json
 {
   "profile": "work",
-  "team": "ENG",
-  "project": "Backend Services",
-  "labels": ["backend", "api"],
-  "assignee": "me",
-  "state": "In Progress"
+  "teamKey": "ENG",
+  "projectId": "proj-1",
+  "defaultLabels": ["backend", "api"],
+  "defaultAssignee": "me",
+  "defaultIssueState": "In Progress"
 }
 ```
 

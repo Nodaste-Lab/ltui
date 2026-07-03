@@ -225,6 +225,15 @@ test('issues commands including relationships succeed', () => {
     assertOk(result, 'issues attachments scan comments');
     assert.equal(readMockLog(attachmentsScanLog).counts.comments, 1);
 
+    const boundedCommentsLog = path.join(ctx.baseDir, 'bounded-comments-log.json');
+    result = runCli(ctx, ['--format', 'json', 'issues', 'attachments', 'ENG-1', '--scan-comments', '--max-comments', '51'], {
+      LTUI_MOCK_MANY_COMMENTS: '1',
+      LTUI_MOCK_REQUEST_LOG: boundedCommentsLog,
+    });
+    assertOk(result, 'issues attachments bounds comment pages');
+    const boundedRequests = readMockLog(boundedCommentsLog).commentRequests;
+    assert.deepEqual(boundedRequests.map((request: any) => request.first), [50, 1]);
+
     result = runCli(ctx, ['--format', 'json', '--limit', '1', 'issues', 'attachments', 'ENG-1']);
     assertOk(result, 'issues attachments paginated first page');
     const pageOne = JSON.parse(result.stdout.trim());
@@ -531,6 +540,24 @@ test('issues list exposes raw GraphQL rate-limit metadata when requested', () =>
     assertOk(result, 'issues list tsv rate limit');
     assert.match(result.stderr, /^RATE_LIMIT requestsLimit=2500 requestsRemaining=2499 requestsReset=1714852800 complexityLimit=3000000 complexityRemaining=2999000/m);
 
+    writeFileSync(
+      ctx.budgetPath,
+      JSON.stringify({
+        schema_version: 1,
+        request_remaining: 0,
+        complexity_remaining: 0,
+        reset_at: '2024-01-01T00:00:00.000Z',
+        backoff_until: '2024-01-01T00:10:00.000Z',
+      })
+    );
+    result = runCli(ctx, ['--show-rate-limit', '--fields', 'id,identifier,title', 'issues', 'list']);
+    assertOk(result, 'issues list refreshes newer budget window');
+    let budget = JSON.parse(readFileSync(ctx.budgetPath, 'utf8'));
+    assert.equal(budget.request_remaining, 2499);
+    assert.equal(budget.complexity_remaining, 2999000);
+    assert.equal(budget.reset_at, '2024-05-04T20:00:00.000Z');
+    assert.equal(budget.backoff_until, null);
+
     result = runCli(ctx, ['--show-rate-limit', 'issues', 'list'], {
       LTUI_MOCK_RAW_RATE_LIMIT: '1',
     });
@@ -547,7 +574,7 @@ test('issues list exposes raw GraphQL rate-limit metadata when requested', () =>
       LINEAR_API_KEY: '',
     });
     assertOk(result, 'issues list records budget from profile identity');
-    let budget = JSON.parse(readFileSync(ctx.budgetPath, 'utf8'));
+    budget = JSON.parse(readFileSync(ctx.budgetPath, 'utf8'));
     assert.equal(budget.workspace_id, 'demo');
     assert.equal(budget.workspace_key, 'demo');
     assert.notEqual(budget.token_fingerprint, 'e3b0c44298fc');
@@ -642,6 +669,16 @@ test('issues list supports repeatable state filters and cheap issue views', () =
     assert.equal(normalView.imageAttachmentsFetchCmd, 'ltui --format json issues attachments ENG-1 --only-images');
     const normalCounts = readMockLog(normalViewLog).counts;
     assert.ok(normalCounts.attachments > 0);
+
+    result = runCli(ctx, ['--no-agent', '--format', 'json', 'issues', 'view', 'ENG-1'], {
+      LTUI_MOCK_COMMENT_ONLY_IMAGE: '1',
+    });
+    const commentOnlyView = expectPureJsonOutput(result, 'issues view comment-only attachment hint') as Record<string, unknown>;
+    assert.equal(commentOnlyView.imageAttachmentsFetchCmd, 'ltui --format json issues attachments ENG-1 --only-images --scan-comments');
+    assert.equal(
+      commentOnlyView.imageAttachmentsDownloadCmd,
+      'ltui issues attachments ENG-1 --only-images --scan-comments --download-dir ./.ltui-attachments/ENG-1'
+    );
 
     const contextViewLog = path.join(ctx.baseDir, 'context-view-log.json');
     result = runCli(

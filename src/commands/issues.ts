@@ -337,8 +337,9 @@ export function runIssuesCommands(program: Command): void {
           fields.IMAGE_ATTACHMENTS_PRESENT = probe.imageAttachmentsPresent ? 'true' : 'false';
           if (probe.imageAttachmentsPresent) {
             const issueRef = issue.identifier ?? ref;
-            fields.IMAGE_ATTACHMENTS_FETCH_CMD = `ltui --format json issues attachments ${issueRef} --only-images`;
-            fields.IMAGE_ATTACHMENTS_DOWNLOAD_CMD = `ltui issues attachments ${issueRef} --only-images --download-dir ./.ltui-attachments/${issueRef}`;
+            const commentFlag = probe.commentImageAttachmentsPresent ? ' --scan-comments' : '';
+            fields.IMAGE_ATTACHMENTS_FETCH_CMD = `ltui --format json issues attachments ${issueRef} --only-images${commentFlag}`;
+            fields.IMAGE_ATTACHMENTS_DOWNLOAD_CMD = `ltui issues attachments ${issueRef} --only-images${commentFlag} --download-dir ./.ltui-attachments/${issueRef}`;
           }
         }
 
@@ -1657,7 +1658,9 @@ async function fetchAllIssueComments(issue: any, maxComments = 50): Promise<any[
   const nodes: any[] = [];
   let after: string | undefined;
   for (;;) {
-    const connection = await issue.comments({ first: Math.min(50, maxComments), after });
+    const remaining = maxComments - nodes.length;
+    if (remaining <= 0) return nodes.slice(0, maxComments);
+    const connection = await issue.comments({ first: Math.min(50, remaining), after });
     nodes.push(...(connection.nodes ?? []));
     if (nodes.length >= maxComments) return nodes.slice(0, maxComments);
     if (!connection.pageInfo?.hasNextPage) break;
@@ -1673,9 +1676,11 @@ async function probeIssueAssets(
 ): Promise<{
   attachmentsPresent: boolean;
   imageAttachmentsPresent: boolean;
+  commentImageAttachmentsPresent: boolean;
 }> {
   let attachmentsPresent = false;
   let imageAttachmentsPresent = false;
+  let commentImageAttachmentsPresent = false;
 
   const descriptionRefs = extractUploadRefs(issue.description ?? '');
   if (descriptionRefs.length > 0) {
@@ -1720,6 +1725,7 @@ async function probeIssueAssets(
         }
         if (refs.some(ref => ref.isImage)) {
           imageAttachmentsPresent = true;
+          commentImageAttachmentsPresent = true;
           break;
         }
       }
@@ -1730,7 +1736,7 @@ async function probeIssueAssets(
     }
   }
 
-  return { attachmentsPresent, imageAttachmentsPresent };
+  return { attachmentsPresent, imageAttachmentsPresent, commentImageAttachmentsPresent };
 }
 
 function extractUploadUrls(text: string): string[] {
