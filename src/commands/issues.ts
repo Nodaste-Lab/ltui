@@ -29,7 +29,15 @@ import {
   isUuid,
 } from '../linear.js';
 import { getSavedQuery, listSavedQueries, removeQuery, saveQuery, SavedQueryDefinition } from '../queries.js';
-import { extractRateLimitInfo, formatRateLimitLine, RateLimitInfo } from '../rateLimit.js';
+import {
+  extractRateLimitInfo,
+  formatRateLimitLine,
+  linearBudgetIdentityFromResolvedConfig,
+  recordSharedLinearBudget,
+  warnIfSharedLinearBackoffActive,
+  RateLimitInfo,
+  type LinearBudgetIdentity,
+} from '../rateLimit.js';
 
 interface IssueListRow {
   id: string;
@@ -138,6 +146,7 @@ export function runIssuesCommands(program: Command): void {
           fields: globalOpts.fields,
           limit: globalOpts.limit,
           cursor: globalOpts.cursor,
+          budgetIdentity: linearBudgetIdentityFromResolvedConfig(resolved),
         });
 
         const out = renderPaginatedList(
@@ -172,7 +181,8 @@ export function runIssuesCommands(program: Command): void {
     .option('--overwrite', 'Overwrite existing files')
     .option('--no-linear-attachments', 'Exclude Linear attachments (issue.attachments)')
     .option('--no-upload-urls', 'Exclude uploads.linear.app URLs extracted from markdown')
-    .option('--no-scan-comments', 'Do not scan comments for uploads.linear.app URLs')
+    .option('--scan-comments', 'Scan issue comments for uploads.linear.app URLs')
+    .option('--max-comments <n>', 'Maximum comments to scan when --scan-comments is enabled', parseNumber, 50)
     .action(async (ref: string, options) => {
       try {
         const globalOpts = getGlobalOptions(program);
@@ -194,10 +204,13 @@ export function runIssuesCommands(program: Command): void {
           return;
         }
 
+        if (options.scanComments) warnIfSharedLinearBackoffActive(linearBudgetIdentityFromResolvedConfig(resolved));
+
         const rows = await buildIssueAssetRows(issue, {
           includeLinearAttachments: options.linearAttachments !== false,
           includeUploadUrls: options.uploadUrls !== false,
-          scanComments: options.scanComments !== false,
+          scanComments: options.scanComments === true,
+          maxComments: options.maxComments,
         });
 
         const filtered = options.onlyImages
@@ -274,7 +287,8 @@ export function runIssuesCommands(program: Command): void {
     .argument('<id>', 'Issue id or key')
     .option('--include-comments', 'Include comments')
     .option('--include-history', 'Include history')
-    .option('--no-attachment-probe', 'Skip default attachment/comment scan for image guidance')
+    .option('--attachment-probe', 'Probe Linear attachments for image guidance')
+    .option('--no-attachment-probe', 'Skip attachment probe for image guidance')
     .option('--max-description-chars <n>', 'Max description chars', parseNumber, 4000)
     .option('--max-comment-chars <n>', 'Max comment chars', parseNumber, 500)
     .action(async (ref: string, options) => {
@@ -315,16 +329,17 @@ export function runIssuesCommands(program: Command): void {
         };
 
         const probe =
-          options.attachmentProbe === false
-            ? null
-            : await probeIssueAssets(issue);
+          options.attachmentProbe === true || (!globalOpts.agentMode && options.attachmentProbe !== false)
+            ? await probeIssueAssets(issue, { scanComments: !globalOpts.agentMode })
+            : null;
         if (probe) {
           fields.ATTACHMENTS_PRESENT = probe.attachmentsPresent ? 'true' : 'false';
           fields.IMAGE_ATTACHMENTS_PRESENT = probe.imageAttachmentsPresent ? 'true' : 'false';
           if (probe.imageAttachmentsPresent) {
             const issueRef = issue.identifier ?? ref;
-            fields.IMAGE_ATTACHMENTS_FETCH_CMD = `ltui --format json issues attachments ${issueRef} --only-images`;
-            fields.IMAGE_ATTACHMENTS_DOWNLOAD_CMD = `ltui issues attachments ${issueRef} --only-images --download-dir ./.ltui-attachments/${issueRef}`;
+            const commentFlag = probe.commentImageAttachmentsPresent ? ' --scan-comments' : '';
+            fields.IMAGE_ATTACHMENTS_FETCH_CMD = `ltui --format json issues attachments ${issueRef} --only-images${commentFlag}`;
+            fields.IMAGE_ATTACHMENTS_DOWNLOAD_CMD = `ltui issues attachments ${issueRef} --only-images${commentFlag} --download-dir ./.ltui-attachments/${issueRef}`;
           }
         }
 
@@ -1181,7 +1196,7 @@ function mergeSavedQueryOptions(options: IssueListCommandOptions): IssueListComm
 async function fetchIssueListRows(
   client: any,
   options: IssueListCommandOptions,
-  queryOptions: { fields?: string[]; limit: number; cursor: string | null }
+  queryOptions: { fields?: string[]; limit: number; cursor: string | null; budgetIdentity?: LinearBudgetIdentity }
 ): Promise<{ rows: IssueListRow[]; pageInfo: any; rateLimit?: RateLimitInfo }> {
   const selectedFields = selectIssueListFields(queryOptions.fields);
   const selection = buildIssueListSelection(selectedFields);
@@ -1201,10 +1216,13 @@ async function fetchIssueListRows(
   const response = await executeRawGraphQL(client, query, variables);
   const connection = isSearch ? response.data?.searchIssues : response.data?.issues;
   const nodes = connection?.nodes ?? [];
+  const rateLimit = extractRateLimitInfo(response.headers);
+  if (rateLimit) recordSharedLinearBudget(rateLimit, queryOptions.budgetIdentity);
+
   return {
     rows: nodes.map(mapRawIssueToRow),
     pageInfo: connection?.pageInfo ?? {},
-    rateLimit: extractRateLimitInfo(response.headers),
+    rateLimit,
   };
 }
 
@@ -1533,7 +1551,7 @@ interface LocalImageUpload {
 
 async function buildIssueAssetRows(
   issue: any,
-  options: { includeLinearAttachments: boolean; includeUploadUrls: boolean; scanComments: boolean }
+  options: { includeLinearAttachments: boolean; includeUploadUrls: boolean; scanComments: boolean; maxComments?: number }
 ): Promise<IssueAssetRow[]> {
   const rowsById = new Map<string, IssueAssetRow>();
 
@@ -1572,7 +1590,7 @@ async function buildIssueAssetRows(
     }
 
     if (options.scanComments) {
-      const comments = await fetchAllIssueComments(issue);
+      const comments = await fetchAllIssueComments(issue, options.maxComments);
       for (const comment of comments) {
         const createdAt = comment.createdAt?.toISOString?.() ?? '';
         const subtitle = `comment:${comment.id ?? ''}`;
@@ -1636,12 +1654,15 @@ async function fetchAllIssueAttachments(issue: any): Promise<any[]> {
   return nodes;
 }
 
-async function fetchAllIssueComments(issue: any): Promise<any[]> {
+async function fetchAllIssueComments(issue: any, maxComments = 50): Promise<any[]> {
   const nodes: any[] = [];
   let after: string | undefined;
   for (;;) {
-    const connection = await issue.comments({ first: 50, after });
+    const remaining = maxComments - nodes.length;
+    if (remaining <= 0) return nodes.slice(0, maxComments);
+    const connection = await issue.comments({ first: Math.min(50, remaining), after });
     nodes.push(...(connection.nodes ?? []));
+    if (nodes.length >= maxComments) return nodes.slice(0, maxComments);
     if (!connection.pageInfo?.hasNextPage) break;
     after = connection.pageInfo?.endCursor;
     if (!after) break;
@@ -1649,12 +1670,17 @@ async function fetchAllIssueComments(issue: any): Promise<any[]> {
   return nodes;
 }
 
-async function probeIssueAssets(issue: any): Promise<{
+async function probeIssueAssets(
+  issue: any,
+  options: { scanComments: boolean } = { scanComments: false }
+): Promise<{
   attachmentsPresent: boolean;
   imageAttachmentsPresent: boolean;
+  commentImageAttachmentsPresent: boolean;
 }> {
   let attachmentsPresent = false;
   let imageAttachmentsPresent = false;
+  let commentImageAttachmentsPresent = false;
 
   const descriptionRefs = extractUploadRefs(issue.description ?? '');
   if (descriptionRefs.length > 0) {
@@ -1687,7 +1713,7 @@ async function probeIssueAssets(issue: any): Promise<{
   }
 
   // Probe uploads in comments. Early-exit once images are found.
-  if (!imageAttachmentsPresent) {
+  if (options.scanComments && !imageAttachmentsPresent) {
     let afterComment: string | undefined;
     for (;;) {
       const connection = await issue.comments({ first: 50, after: afterComment });
@@ -1699,6 +1725,7 @@ async function probeIssueAssets(issue: any): Promise<{
         }
         if (refs.some(ref => ref.isImage)) {
           imageAttachmentsPresent = true;
+          commentImageAttachmentsPresent = true;
           break;
         }
       }
@@ -1709,7 +1736,7 @@ async function probeIssueAssets(issue: any): Promise<{
     }
   }
 
-  return { attachmentsPresent, imageAttachmentsPresent };
+  return { attachmentsPresent, imageAttachmentsPresent, commentImageAttachmentsPresent };
 }
 
 function extractUploadUrls(text: string): string[] {
@@ -2212,6 +2239,7 @@ function collect(value: string, previous: string[] = []): string[] {
 }
 
 function writeError(error: unknown): void {
+  recordSharedLinearBudget(error);
   const parsed = parseLinearError(error);
   const out = emitError(parsed.code, parsed.message);
   process.stderr.write(out + '\n');

@@ -332,11 +332,13 @@ class MockLinearClient {
   public client: any;
   public __ltuiRequestCounts: MockRequestCounts;
   public __ltuiRawRequests: Array<{ query: string; variables: Record<string, unknown> }>;
+  public __ltuiCommentRequests: Array<Record<string, unknown>>;
 
   constructor(data: ReturnType<typeof buildData>) {
     this.data = data;
     this.__ltuiRequestCounts = createCounts();
     this.__ltuiRawRequests = [];
+    this.__ltuiCommentRequests = [];
     this.viewer = this.decorateUser(data.users[0]);
     this.client = {
       rawRequest: async (query: string, variables?: Record<string, unknown>) =>
@@ -351,6 +353,7 @@ class MockLinearClient {
           JSON.stringify({
             counts: this.__ltuiRequestCounts,
             rawRequests: this.__ltuiRawRequests,
+            commentRequests: this.__ltuiCommentRequests,
           })
         );
       };
@@ -736,30 +739,45 @@ class MockLinearClient {
     const state = this.data.states.find(s => s.id === issue.stateId)!;
     const assignee = this.data.users.find(u => u.id === issue.assigneeId)!;
 
-    const attachmentNodes = (issue.attachments ?? []).map(item => ({
-      id: item.id,
-      title: item.title,
-      subtitle: item.subtitle ?? null,
-      url: item.url,
-      sourceType: item.sourceType ?? null,
-      metadata: item.metadata ?? {},
-      groupBySource: false,
-      source: null,
-      bodyData: null,
-      archivedAt: null,
-      createdAt: new Date(item.createdAt),
-      updatedAt: new Date(item.createdAt),
-    }));
+    const commentOnlyImageMode = process.env.LTUI_MOCK_COMMENT_ONLY_IMAGE === '1';
+    const attachmentNodes = commentOnlyImageMode
+      ? []
+      : (issue.attachments ?? []).map(item => ({
+          id: item.id,
+          title: item.title,
+          subtitle: item.subtitle ?? null,
+          url: item.url,
+          sourceType: item.sourceType ?? null,
+          metadata: item.metadata ?? {},
+          groupBySource: false,
+          source: null,
+          bodyData: null,
+          archivedAt: null,
+          createdAt: new Date(item.createdAt),
+          updatedAt: new Date(item.createdAt),
+        }));
 
-    const commentNodes = [
+    const commentImageUrl = commentOnlyImageMode
+      ? 'https://uploads.linear.app/mock-workspace/comment-only.png'
+      : 'https://uploads.linear.app/6db02bb9-fba2-473b-8f9d-f38188e84813/d20adbea-186d-4643-ad07-004bda7d099d';
+    const defaultCommentNodes = [
       {
         id: 'comment-1',
         user: this.decorateUser(this.data.users[1]),
         createdAt: new Date('2024-01-06T00:00:00Z'),
-        body:
-          'Looks good. Another screenshot: https://uploads.linear.app/6db02bb9-fba2-473b-8f9d-f38188e84813/d20adbea-186d-4643-ad07-004bda7d099d',
+        body: `Looks good. Another screenshot: ${commentImageUrl}`,
       },
     ];
+    const commentNodes = process.env.LTUI_MOCK_MANY_COMMENTS === '1'
+      ? Array.from({ length: 60 }, (_, index) => ({
+          id: `comment-${index + 1}`,
+          user: this.decorateUser(this.data.users[1]),
+          createdAt: new Date(`2024-01-${String(Math.min(index + 1, 28)).padStart(2, '0')}T00:00:00Z`),
+          body: index === 50
+            ? 'Bounded screenshot: https://uploads.linear.app/mock-workspace/bounded.png'
+            : `Comment ${index + 1}`,
+        }))
+      : defaultCommentNodes;
     const decorated: any = {
       id: issue.id,
       identifier: issue.identifier,
@@ -771,7 +789,7 @@ class MockLinearClient {
         self.__ltuiRequestCounts.labels += 1;
         return connection(labels.map(label => ({ ...label })));
       },
-      description: issue.description,
+      description: commentOnlyImageMode ? 'Issue description without uploads' : issue.description,
       createdAt: new Date(issue.createdAt),
       updatedAt: new Date(issue.updatedAt),
       attachments: async (variables?: any) => {
@@ -780,6 +798,7 @@ class MockLinearClient {
       },
       comments: async (variables?: any) => {
         self.__ltuiRequestCounts.comments += 1;
+        self.__ltuiCommentRequests.push(variables ?? {});
         return connection(commentNodes, variables);
       },
       history: async () => {

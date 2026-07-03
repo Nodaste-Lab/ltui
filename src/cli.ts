@@ -10,6 +10,7 @@ import { runDocumentsCommands } from './commands/documents.js';
 import { runRoadmapsCommands } from './commands/roadmaps.js';
 import { runMilestonesCommands } from './commands/milestones.js';
 import { runNotificationsCommands } from './commands/notifications.js';
+import { runCacheCommands } from './commands/cache.js';
 import { loadExtensions } from './extensions.js';
 
 export async function main(argv: string[] = process.argv.slice(2)) {
@@ -39,6 +40,7 @@ export async function main(argv: string[] = process.argv.slice(2)) {
   runRoadmapsCommands(program);
   runMilestonesCommands(program);
   runNotificationsCommands(program);
+  runCacheCommands(program);
 
   await loadExtensions(program);
 

@@ -12,15 +12,17 @@ interface EnvContext {
   baseDir: string;
   configDir: string;
   workDir: string;
+  budgetPath: string;
 }
 
 function createContext(): EnvContext {
   const baseDir = mkdtempSync(path.join(os.tmpdir(), 'ltui-regression-'));
   const configDir = path.join(baseDir, 'config');
   const workDir = path.join(baseDir, 'workspace');
+  const budgetPath = path.join(baseDir, 'linear-budget.json');
   mkdirSync(configDir, { recursive: true });
   mkdirSync(workDir, { recursive: true });
-  return { baseDir, configDir, workDir };
+  return { baseDir, configDir, workDir, budgetPath };
 }
 
 function cleanupContext(ctx: EnvContext): void {
@@ -35,6 +37,7 @@ function runCli(ctx: EnvContext, args: string[], extraEnv: Record<string, string
       ...process.env,
       LTUI_CONFIG_DIR: ctx.configDir,
       LINEAR_API_KEY: 'lin_api_test',
+      LINEAR_BUDGET_STATE_PATH: ctx.budgetPath,
       LTUI_TEST_CLIENT_MODULE: MOCK_CLIENT,
       ...extraEnv,
     },
@@ -207,9 +210,29 @@ test('issues commands including relationships succeed', () => {
     assert.deepEqual(Object.keys(issueFieldsJson).sort(), ['identifier', 'state', 'url']);
     assert.equal(issueFieldsJson.identifier, 'ENG-1');
 
-    result = runCli(ctx, ['issues', 'attachments', 'ENG-1', '--only-images']);
+    const attachmentsDefaultLog = path.join(ctx.baseDir, 'attachments-default-log.json');
+    result = runCli(ctx, ['issues', 'attachments', 'ENG-1', '--only-images'], {
+      LTUI_MOCK_REQUEST_LOG: attachmentsDefaultLog,
+    });
     assertOk(result, 'issues attachments');
     expectOutput(result, 'sourceType');
+    assert.equal(readMockLog(attachmentsDefaultLog).counts.comments, 0);
+
+    const attachmentsScanLog = path.join(ctx.baseDir, 'attachments-scan-log.json');
+    result = runCli(ctx, ['--format', 'json', 'issues', 'attachments', 'ENG-1', '--scan-comments', '--max-comments', '1'], {
+      LTUI_MOCK_REQUEST_LOG: attachmentsScanLog,
+    });
+    assertOk(result, 'issues attachments scan comments');
+    assert.equal(readMockLog(attachmentsScanLog).counts.comments, 1);
+
+    const boundedCommentsLog = path.join(ctx.baseDir, 'bounded-comments-log.json');
+    result = runCli(ctx, ['--format', 'json', 'issues', 'attachments', 'ENG-1', '--scan-comments', '--max-comments', '51'], {
+      LTUI_MOCK_MANY_COMMENTS: '1',
+      LTUI_MOCK_REQUEST_LOG: boundedCommentsLog,
+    });
+    assertOk(result, 'issues attachments bounds comment pages');
+    const boundedRequests = readMockLog(boundedCommentsLog).commentRequests;
+    assert.deepEqual(boundedRequests.map((request: any) => request.first), [50, 1]);
 
     result = runCli(ctx, ['--format', 'json', '--limit', '1', 'issues', 'attachments', 'ENG-1']);
     assertOk(result, 'issues attachments paginated first page');
@@ -517,6 +540,24 @@ test('issues list exposes raw GraphQL rate-limit metadata when requested', () =>
     assertOk(result, 'issues list tsv rate limit');
     assert.match(result.stderr, /^RATE_LIMIT requestsLimit=2500 requestsRemaining=2499 requestsReset=1714852800 complexityLimit=3000000 complexityRemaining=2999000/m);
 
+    writeFileSync(
+      ctx.budgetPath,
+      JSON.stringify({
+        schema_version: 1,
+        request_remaining: 0,
+        complexity_remaining: 0,
+        reset_at: '2024-01-01T00:00:00.000Z',
+        backoff_until: '2024-01-01T00:10:00.000Z',
+      })
+    );
+    result = runCli(ctx, ['--show-rate-limit', '--fields', 'id,identifier,title', 'issues', 'list']);
+    assertOk(result, 'issues list refreshes newer budget window');
+    let budget = JSON.parse(readFileSync(ctx.budgetPath, 'utf8'));
+    assert.equal(budget.request_remaining, 2499);
+    assert.equal(budget.complexity_remaining, 2999000);
+    assert.equal(budget.reset_at, '2024-05-04T20:00:00.000Z');
+    assert.equal(budget.backoff_until, null);
+
     result = runCli(ctx, ['--show-rate-limit', 'issues', 'list'], {
       LTUI_MOCK_RAW_RATE_LIMIT: '1',
     });
@@ -524,6 +565,33 @@ test('issues list exposes raw GraphQL rate-limit metadata when requested', () =>
     assert.match(result.stderr, /ERROR: api_error rate_limited/);
     assert.match(result.stderr, /requestsRemaining=0/);
     assert.match(result.stderr, /wait until reset before retrying/);
+
+    result = runCli(ctx, ['auth', 'add', '--profile', 'test', '--workspace', 'demo'], {
+      LINEAR_API_KEY: 'lin_profile_key',
+    });
+    assertOk(result, 'auth add for budget identity');
+    result = runCli(ctx, ['--show-rate-limit', 'issues', 'list'], {
+      LINEAR_API_KEY: '',
+    });
+    assertOk(result, 'issues list records budget from profile identity');
+    budget = JSON.parse(readFileSync(ctx.budgetPath, 'utf8'));
+    assert.equal(budget.workspace_id, 'demo');
+    assert.equal(budget.workspace_key, 'demo');
+    assert.notEqual(budget.token_fingerprint, 'e3b0c44298fc');
+
+    result = runCli(ctx, ['auth', 'add', '--profile', 'alt', '--workspace', 'alt-workspace'], {
+      LINEAR_API_KEY: 'lin_alt_profile_key',
+    });
+    assertOk(result, 'auth add alternate profile for budget error identity');
+    result = runCli(ctx, ['--profile', 'alt', '--show-rate-limit', 'issues', 'list'], {
+      LINEAR_API_KEY: '',
+      LTUI_MOCK_RAW_RATE_LIMIT: '1',
+    });
+    assert.notEqual(result.status, 0);
+    budget = JSON.parse(readFileSync(ctx.budgetPath, 'utf8'));
+    assert.equal(budget.workspace_id, 'alt-workspace');
+    assert.equal(budget.workspace_key, 'alt-workspace');
+    assert.notEqual(budget.token_fingerprint, 'e3b0c44298fc');
   } finally {
     cleanupContext(ctx);
   }
@@ -560,6 +628,18 @@ test('issues list supports repeatable state filters and cheap issue views', () =
       { name: { eq: 'In Progress' } },
     ]);
 
+    const defaultAgentViewLog = path.join(ctx.baseDir, 'default-agent-view-log.json');
+    result = runCli(
+      ctx,
+      ['--format', 'json', '--fields', 'identifier,title,state,url', 'issues', 'view', 'ENG-1'],
+      { LTUI_MOCK_REQUEST_LOG: defaultAgentViewLog }
+    );
+    const defaultAgentView = expectPureJsonOutput(result, 'issues view default agent no attachment probe') as Record<string, unknown>;
+    assert.deepEqual(Object.keys(defaultAgentView).sort(), ['identifier', 'state', 'title', 'url']);
+    const defaultAgentCounts = readMockLog(defaultAgentViewLog).counts;
+    assert.equal(defaultAgentCounts.attachments, 0);
+    assert.equal(defaultAgentCounts.comments, 0);
+
     const cheapViewLog = path.join(ctx.baseDir, 'cheap-view-log.json');
     result = runCli(
       ctx,
@@ -582,13 +662,23 @@ test('issues list supports repeatable state filters and cheap issue views', () =
     assert.equal(cheapCounts.comments, 0);
 
     const normalViewLog = path.join(ctx.baseDir, 'normal-view-log.json');
-    result = runCli(ctx, ['--format', 'json', 'issues', 'view', 'ENG-1'], {
+    result = runCli(ctx, ['--format', 'json', 'issues', 'view', 'ENG-1', '--attachment-probe'], {
       LTUI_MOCK_REQUEST_LOG: normalViewLog,
     });
-    const normalView = expectPureJsonOutput(result, 'issues view default attachment probe') as Record<string, unknown>;
+    const normalView = expectPureJsonOutput(result, 'issues view explicit attachment probe') as Record<string, unknown>;
     assert.equal(normalView.imageAttachmentsFetchCmd, 'ltui --format json issues attachments ENG-1 --only-images');
     const normalCounts = readMockLog(normalViewLog).counts;
     assert.ok(normalCounts.attachments > 0);
+
+    result = runCli(ctx, ['--no-agent', '--format', 'json', 'issues', 'view', 'ENG-1'], {
+      LTUI_MOCK_COMMENT_ONLY_IMAGE: '1',
+    });
+    const commentOnlyView = expectPureJsonOutput(result, 'issues view comment-only attachment hint') as Record<string, unknown>;
+    assert.equal(commentOnlyView.imageAttachmentsFetchCmd, 'ltui --format json issues attachments ENG-1 --only-images --scan-comments');
+    assert.equal(
+      commentOnlyView.imageAttachmentsDownloadCmd,
+      'ltui issues attachments ENG-1 --only-images --scan-comments --download-dir ./.ltui-attachments/ENG-1'
+    );
 
     const contextViewLog = path.join(ctx.baseDir, 'context-view-log.json');
     result = runCli(
@@ -601,6 +691,33 @@ test('issues list supports repeatable state filters and cheap issue views', () =
     assert.equal(contextCounts.attachments, 0);
     assert.equal(contextCounts.comments, 1);
     assert.equal(contextCounts.history, 1);
+  } finally {
+    cleanupContext(ctx);
+  }
+});
+
+test('cache clear removes all or one metadata bucket', () => {
+  const ctx = createContext();
+  try {
+    const cachePath = path.join(ctx.configDir, 'cache.json');
+    writeFileSync(
+      cachePath,
+      JSON.stringify({
+        teams: { eng: { value: 'team-1', expiresAt: Date.now() + 60_000 } },
+        labels: { bug: { value: 'label-1', expiresAt: Date.now() + 60_000 } },
+      })
+    );
+
+    let result = runCli(ctx, ['cache', 'clear', '--bucket', 'labels']);
+    assertOk(result, 'cache clear bucket');
+    let cache = JSON.parse(readFileSync(cachePath, 'utf8'));
+    assert.ok(cache.teams);
+    assert.equal(cache.labels, undefined);
+
+    result = runCli(ctx, ['cache', 'clear']);
+    assertOk(result, 'cache clear all');
+    cache = JSON.parse(readFileSync(cachePath, 'utf8'));
+    assert.deepEqual(cache, {});
   } finally {
     cleanupContext(ctx);
   }

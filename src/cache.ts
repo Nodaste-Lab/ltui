@@ -73,3 +73,9 @@ export function clearCacheBucket(bucket: string): void {
     persist(cache);
   }
 }
+
+export function clearCache(): void {
+  memoryCache = {};
+  loaded = true;
+  persist(memoryCache);
+}
