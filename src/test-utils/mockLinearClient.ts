@@ -740,9 +740,27 @@ class MockLinearClient {
     const assignee = this.data.users.find(u => u.id === issue.assigneeId)!;
 
     const commentOnlyImageMode = process.env.LTUI_MOCK_COMMENT_ONLY_IMAGE === '1';
+    const externalImageWithCommentUpload = process.env.LTUI_MOCK_EXTERNAL_IMAGE_WITH_COMMENT_UPLOAD === '1';
     const attachmentNodes = commentOnlyImageMode
       ? []
-      : (issue.attachments ?? []).map(item => ({
+      : externalImageWithCommentUpload
+        ? [
+            {
+              id: 'external-image-1',
+              title: 'External screenshot',
+              subtitle: null,
+              url: 'https://example.com/external-screenshot.png',
+              sourceType: 'link',
+              metadata: { contentType: 'image/png' },
+              groupBySource: false,
+              source: null,
+              bodyData: null,
+              archivedAt: null,
+              createdAt: new Date('2024-01-01T12:00:00Z'),
+              updatedAt: new Date('2024-01-01T12:00:00Z'),
+            },
+          ]
+        : (issue.attachments ?? []).map(item => ({
           id: item.id,
           title: item.title,
           subtitle: item.subtitle ?? null,
@@ -757,7 +775,7 @@ class MockLinearClient {
           updatedAt: new Date(item.createdAt),
         }));
 
-    const commentImageUrl = commentOnlyImageMode
+    const commentImageUrl = commentOnlyImageMode || externalImageWithCommentUpload
       ? 'https://uploads.linear.app/mock-workspace/comment-only.png'
       : 'https://uploads.linear.app/6db02bb9-fba2-473b-8f9d-f38188e84813/d20adbea-186d-4643-ad07-004bda7d099d';
     const defaultCommentNodes = [
@@ -789,7 +807,7 @@ class MockLinearClient {
         self.__ltuiRequestCounts.labels += 1;
         return connection(labels.map(label => ({ ...label })));
       },
-      description: commentOnlyImageMode ? 'Issue description without uploads' : issue.description,
+      description: commentOnlyImageMode || externalImageWithCommentUpload ? 'Issue description without uploads' : issue.description,
       createdAt: new Date(issue.createdAt),
       updatedAt: new Date(issue.updatedAt),
       attachments: async (variables?: any) => {
