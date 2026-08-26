@@ -26,7 +26,7 @@ export function createLinearClient(resolved: ResolvedConfig): LinearClient {
   const parsedExpireIn = rawExpireIn ? parseInt(rawExpireIn, 10) : NaN;
   const expireIn = Number.isFinite(parsedExpireIn) && parsedExpireIn > 0 ? parsedExpireIn : 60 * 60;
 
-  // Request signed uploads.linear.app URLs so tools without custom headers can fetch files.
+  // Sign GraphQL markdown/file URLs. Does not sign attachment.url; downloads still auth.
   cachedClient = new LinearClient({
     apiKey: resolved.apiKey,
     headers: {

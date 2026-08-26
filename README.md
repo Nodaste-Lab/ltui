@@ -345,7 +345,7 @@ ltui --format json issues attachments ENG-123 --scan-comments
 ltui issues attachments ENG-123 --scan-comments --download-dir ./.ltui-attachments/ENG-123
 ```
 
-The attachment rows identify the retrieval route. For `downloadAccess: "ltui_authenticated"`, run that row's `downloadCommand` (or the download command above). This is required for private `https://uploads.linear.app` files: `ltui` attaches the configured Linear credential, rejects authenticated redirects, and reports the local `downloadPath`, `downloadStatus`, and `downloadError`. Do not pass such a URL to `curl` or another generic downloader; it can return HTTP 401.
+The attachment rows identify the retrieval route. For `downloadAccess: "ltui_authenticated"`, run that row's `downloadCommand` (or the download command above). This is required for private `https://uploads.linear.app` files: `ltui` sends the GraphQL-compatible `Authorization` header (raw `lin_api_...` personal keys, `Bearer` only for OAuth tokens), rejects authenticated redirects, and reports the local `downloadPath`, `downloadStatus`, and `downloadError`. Do not pass such a URL to `curl` or another generic downloader; it can return HTTP 401. `public-file-urls-expire-in` signs markdown upload URLs in GraphQL bodies, not `attachment.url`.
 
 `downloadAccess: "direct_url"` means ltui does not attach a Linear credential. Treat every downloaded file as untrusted input before opening or handing it to downstream automation.
 

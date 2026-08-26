@@ -1,23 +1,50 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { buildAttachmentDownloadRequest, downloadToDir } from '../commands/issues.js';
+import {
+  buildAttachmentDownloadRequest,
+  DEFAULT_DOWNLOAD_TIMEOUT_MS,
+  DEFAULT_MAX_DOWNLOAD_BYTES,
+  downloadToDir,
+} from '../commands/issues.js';
 
-test('private Linear uploads use exactly one Bearer token and fail closed on redirects', () => {
-  const request = buildAttachmentDownloadRequest(
-    new URL('https://uploads.linear.app/workspace/file.png'),
-    'Bearer Bearer lin_api_test'
-  );
+const PRIVATE_UPLOAD = 'https://uploads.linear.app/workspace/file.png';
+const KNOWN_CUSTOMER_ZIP_BYTES = 167_138_784;
+
+test('personal API keys use a raw GraphQL Authorization header', () => {
+  const request = buildAttachmentDownloadRequest(new URL(PRIVATE_UPLOAD), 'lin_api_test');
 
   assert.deepEqual(request, {
-    headers: { Authorization: 'Bearer lin_api_test' },
+    headers: { Authorization: 'lin_api_test' },
     redirect: 'error',
   });
 });
 
-test('authenticated downloads pass fail-closed redirect policy to the fetch seam', async () => {
+test('strips accidental Bearer prefixes from personal API keys', () => {
+  const request = buildAttachmentDownloadRequest(
+    new URL(PRIVATE_UPLOAD),
+    'Bearer Bearer lin_api_test'
+  );
+
+  assert.deepEqual(request, {
+    headers: { Authorization: 'lin_api_test' },
+    redirect: 'error',
+  });
+});
+
+test('OAuth tokens keep a single Bearer Authorization header', () => {
+  const oauth = '00a21d8b0c4e2375114e49c067dfb81eb0d2076f48354714cd5df984d87b67cc';
+  const request = buildAttachmentDownloadRequest(new URL(PRIVATE_UPLOAD), `Bearer ${oauth}`);
+
+  assert.deepEqual(request, {
+    headers: { Authorization: `Bearer ${oauth}` },
+    redirect: 'error',
+  });
+});
+
+test('authenticated downloads send the GraphQL-compatible header and fail closed on redirects', async () => {
   const downloadDir = mkdtempSync(path.join(os.tmpdir(), 'ltui-attachment-download-'));
   const originalFetch = globalThis.fetch;
   const calls: Array<{ input: unknown; init: RequestInit | undefined }> = [];
@@ -30,7 +57,7 @@ test('authenticated downloads pass fail-closed redirect policy to the fetch seam
   };
 
   try {
-    const result = await downloadToDir('https://uploads.linear.app/workspace/file.png', downloadDir, {
+    const result = await downloadToDir(PRIVATE_UPLOAD, downloadDir, {
       overwrite: false,
       apiKey: 'lin_api_test',
       suggestedBaseName: 'file',
@@ -41,7 +68,7 @@ test('authenticated downloads pass fail-closed redirect policy to the fetch seam
     assert.equal(result.downloadError, 'http_302');
     assert.equal(calls.length, 1);
     assert.equal(calls[0].init?.redirect, 'error');
-    assert.deepEqual(calls[0].init?.headers, { Authorization: 'Bearer lin_api_test' });
+    assert.deepEqual(calls[0].init?.headers, { Authorization: 'lin_api_test' });
   } finally {
     globalThis.fetch = originalFetch;
     rmSync(downloadDir, { recursive: true, force: true });
@@ -60,4 +87,46 @@ test('only the exact private upload origin receives authorization', () => {
     const request = buildAttachmentDownloadRequest(new URL(url), 'lin_api_test');
     assert.deepEqual(request, { headers: {} }, url);
   }
+});
+
+test('HTTP 206 partial content is a successful download', async () => {
+  const downloadDir = mkdtempSync(path.join(os.tmpdir(), 'ltui-attachment-download-'));
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response('zip-bytes', {
+      status: 206,
+      headers: { 'content-type': 'application/zip' },
+    });
+
+  try {
+    const result = await downloadToDir(
+      'https://uploads.linear.app/workspace/bundle',
+      downloadDir,
+      {
+        overwrite: false,
+        apiKey: 'lin_api_test',
+        suggestedBaseName: 'Heddle Nodaste quarantine support bundle',
+        validateImage: false,
+      }
+    );
+
+    assert.equal(result.downloadStatus, 'downloaded');
+    assert.equal(result.downloadError, '');
+    assert.match(result.downloadPath, /\.zip$/);
+    assert.equal(readFileSync(result.downloadPath, 'utf8'), 'zip-bytes');
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(downloadDir, { recursive: true, force: true });
+  }
+});
+
+test('download limits cover the known customer zip', () => {
+  assert.ok(
+    DEFAULT_MAX_DOWNLOAD_BYTES >= KNOWN_CUSTOMER_ZIP_BYTES,
+    `max download bytes ${DEFAULT_MAX_DOWNLOAD_BYTES} cannot fit ${KNOWN_CUSTOMER_ZIP_BYTES}`
+  );
+  assert.ok(
+    DEFAULT_DOWNLOAD_TIMEOUT_MS > 30_000,
+    `download timeout ${DEFAULT_DOWNLOAD_TIMEOUT_MS} is still the 30s value that cannot finish a 159 MiB transfer`
+  );
 });

@@ -1545,8 +1545,8 @@ async function formatIssueSummaryBlock(
 }
 
 const PRIVATE_LINEAR_UPLOAD_ORIGIN = 'https://uploads.linear.app';
-const DEFAULT_DOWNLOAD_TIMEOUT_MS = 30_000;
-const DEFAULT_MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024;
+export const DEFAULT_DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
+export const DEFAULT_MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024;
 const DEFAULT_MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg']);
 const IMAGE_CONTENT_TYPES = new Set([
@@ -1857,7 +1857,9 @@ export function buildAttachmentDownloadRequest(
   }
 
   return {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: {
+      Authorization: token.startsWith('lin_api_') ? token : `Bearer ${token}`,
+    },
     redirect: 'error',
   };
 }
@@ -2048,7 +2050,7 @@ async function chooseDownloadPath(
 
 function inferExtension(url: URL, contentType: string): string {
   const ext = path.extname(url.pathname).toLowerCase();
-  if (IMAGE_EXTENSIONS.has(ext)) return ext;
+  if (ext) return ext;
 
   const ct = normalizeContentType(contentType);
   switch (ct) {
@@ -2062,6 +2064,9 @@ function inferExtension(url: URL, contentType: string): string {
       return '.webp';
     case 'image/svg+xml':
       return '.svg';
+    case 'application/zip':
+    case 'application/x-zip-compressed':
+      return '.zip';
     default:
       return '';
   }
