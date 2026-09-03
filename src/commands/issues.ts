@@ -61,6 +61,8 @@ interface IssueAssetRow {
   contentType: string;
   isImage: string;
   createdAt: string;
+  downloadAccess: string;
+  downloadCommand: string;
   downloadPath: string;
   downloadStatus: string;
   downloadError: string;
@@ -257,6 +259,8 @@ export function runIssuesCommands(program: Command): void {
           { key: 'contentType', header: 'contentType', value: row => row.contentType },
           { key: 'isImage', header: 'isImage', value: row => row.isImage },
           { key: 'createdAt', header: 'createdAt', value: row => row.createdAt },
+          { key: 'downloadAccess', header: 'downloadAccess', value: row => row.downloadAccess },
+          { key: 'downloadCommand', header: 'downloadCommand', value: row => row.downloadCommand },
           { key: 'downloadPath', header: 'downloadPath', value: row => row.downloadPath },
           { key: 'downloadStatus', header: 'downloadStatus', value: row => row.downloadStatus },
           { key: 'downloadError', header: 'downloadError', value: row => row.downloadError },
@@ -333,13 +337,19 @@ export function runIssuesCommands(program: Command): void {
             ? await probeIssueAssets(issue, { scanComments: !globalOpts.agentMode })
             : null;
         if (probe) {
+          const issueRef = issue.identifier ?? ref;
           fields.ATTACHMENTS_PRESENT = probe.attachmentsPresent ? 'true' : 'false';
           fields.IMAGE_ATTACHMENTS_PRESENT = probe.imageAttachmentsPresent ? 'true' : 'false';
           if (probe.imageAttachmentsPresent) {
-            const issueRef = issue.identifier ?? ref;
             const commentFlag = probe.commentImageAttachmentsPresent ? ' --scan-comments' : '';
             fields.IMAGE_ATTACHMENTS_FETCH_CMD = `ltui --format json issues attachments ${issueRef} --only-images${commentFlag}`;
             fields.IMAGE_ATTACHMENTS_DOWNLOAD_CMD = `ltui issues attachments ${issueRef} --only-images${commentFlag} --download-dir ./.ltui-attachments/${issueRef}`;
+          }
+          if (probe.privateAttachmentsPresent) {
+            const commentFlag = probe.commentPrivateAttachmentsPresent ? ' --scan-comments' : '';
+            fields.ATTACHMENTS_DOWNLOAD_CMD = `ltui issues attachments ${issueRef}${commentFlag} --download-dir ./.ltui-attachments/${issueRef}`;
+            fields.ATTACHMENTS_DOWNLOAD_GUIDANCE =
+              'Private Linear uploads require ltui download mode; use downloadPath from the attachment row.';
           }
         }
 
@@ -370,6 +380,13 @@ export function runIssuesCommands(program: Command): void {
             : '';
           jsonPayload.imageAttachmentsDownloadCmd = probe.imageAttachmentsPresent
             ? fields.IMAGE_ATTACHMENTS_DOWNLOAD_CMD
+            : '';
+          jsonPayload.privateAttachmentsPresent = probe.privateAttachmentsPresent;
+          jsonPayload.attachmentsDownloadCmd = probe.privateAttachmentsPresent
+            ? fields.ATTACHMENTS_DOWNLOAD_CMD
+            : '';
+          jsonPayload.attachmentsDownloadGuidance = probe.privateAttachmentsPresent
+            ? fields.ATTACHMENTS_DOWNLOAD_GUIDANCE
             : '';
         }
 
@@ -1527,8 +1544,9 @@ async function formatIssueSummaryBlock(
   return renderDetailOrJsonRecord(header, fields, jsonPayload, outputOptions);
 }
 
-const DEFAULT_DOWNLOAD_TIMEOUT_MS = 30_000;
-const DEFAULT_MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024;
+const PRIVATE_LINEAR_UPLOAD_ORIGIN = 'https://uploads.linear.app';
+export const DEFAULT_DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
+export const DEFAULT_MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024;
 const DEFAULT_MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg']);
 const IMAGE_CONTENT_TYPES = new Set([
@@ -1575,6 +1593,8 @@ async function buildIssueAssetRows(
         contentType,
         isImage: isImage ? 'true' : 'false',
         createdAt,
+        downloadAccess: '',
+        downloadCommand: '',
         downloadPath: '',
         downloadStatus: '',
         downloadError: '',
@@ -1601,6 +1621,15 @@ async function buildIssueAssetRows(
     }
   }
 
+  const issueRef = issue.identifier ?? issue.id ?? '';
+  for (const row of rowsById.values()) {
+    row.downloadAccess = isPrivateLinearUploadUrl(row.url) ? 'ltui_authenticated' : 'direct_url';
+    row.downloadCommand =
+      row.downloadAccess === 'ltui_authenticated'
+        ? `ltui issues attachments ${issueRef}${row.subtitle.startsWith('comment:') ? ' --scan-comments' : ''} --download-dir ./.ltui-attachments/${issueRef}`
+        : '';
+  }
+
   return [...rowsById.values()];
 }
 
@@ -1622,6 +1651,8 @@ function upsertUploadRow(
     contentType: '',
     isImage: isImage ? 'true' : 'false',
     createdAt,
+    downloadAccess: '',
+    downloadCommand: '',
     downloadPath: '',
     downloadStatus: '',
     downloadError: '',
@@ -1677,14 +1708,19 @@ async function probeIssueAssets(
   attachmentsPresent: boolean;
   imageAttachmentsPresent: boolean;
   commentImageAttachmentsPresent: boolean;
+  privateAttachmentsPresent: boolean;
+  commentPrivateAttachmentsPresent: boolean;
 }> {
   let attachmentsPresent = false;
   let imageAttachmentsPresent = false;
   let commentImageAttachmentsPresent = false;
+  let privateAttachmentsPresent = false;
+  let commentPrivateAttachmentsPresent = false;
 
   const descriptionRefs = extractUploadRefs(issue.description ?? '');
   if (descriptionRefs.length > 0) {
     attachmentsPresent = true;
+    privateAttachmentsPresent = true;
   }
   if (descriptionRefs.some(ref => ref.isImage)) {
     imageAttachmentsPresent = true;
@@ -1701,19 +1737,23 @@ async function probeIssueAssets(
     for (const attachment of nodes) {
       const url = attachment.url ?? '';
       const contentType = String((attachment.metadata as any)?.contentType ?? '');
+      if (isPrivateLinearUploadUrl(url)) {
+        privateAttachmentsPresent = true;
+      }
       if (isImageLike({ url, contentType })) {
         imageAttachmentsPresent = true;
-        break;
       }
     }
-    if (imageAttachmentsPresent) break;
+    if (imageAttachmentsPresent && privateAttachmentsPresent) break;
     if (!connection.pageInfo?.hasNextPage) break;
     afterAttachment = connection.pageInfo?.endCursor;
     if (!afterAttachment) break;
   }
 
-  // Probe uploads in comments. Early-exit once images are found.
-  if (options.scanComments && !imageAttachmentsPresent) {
+  // Probe comments only for attachment facts not already established above.
+  const needsCommentImage = !imageAttachmentsPresent;
+  const needsCommentPrivateUpload = !privateAttachmentsPresent;
+  if (options.scanComments && (needsCommentImage || needsCommentPrivateUpload)) {
     let afterComment: string | undefined;
     for (;;) {
       const connection = await issue.comments({ first: 50, after: afterComment });
@@ -1722,21 +1762,30 @@ async function probeIssueAssets(
         const refs = extractUploadRefs(comment.body ?? '');
         if (refs.length > 0) {
           attachmentsPresent = true;
+          privateAttachmentsPresent = true;
+          commentPrivateAttachmentsPresent = true;
         }
         if (refs.some(ref => ref.isImage)) {
           imageAttachmentsPresent = true;
           commentImageAttachmentsPresent = true;
-          break;
         }
       }
-      if (imageAttachmentsPresent) break;
+      const foundNeededImage = !needsCommentImage || commentImageAttachmentsPresent;
+      const foundNeededPrivateUpload = !needsCommentPrivateUpload || commentPrivateAttachmentsPresent;
+      if (foundNeededImage && foundNeededPrivateUpload) break;
       if (!connection.pageInfo?.hasNextPage) break;
       afterComment = connection.pageInfo?.endCursor;
       if (!afterComment) break;
     }
   }
 
-  return { attachmentsPresent, imageAttachmentsPresent, commentImageAttachmentsPresent };
+  return {
+    attachmentsPresent,
+    imageAttachmentsPresent,
+    commentImageAttachmentsPresent,
+    privateAttachmentsPresent,
+    commentPrivateAttachmentsPresent,
+  };
 }
 
 function extractUploadUrls(text: string): string[] {
@@ -1786,6 +1835,35 @@ function extractUploadRefs(text: string): Array<{ url: string; isImage: boolean 
   return results;
 }
 
+function isPrivateLinearUploadUrl(value: string): boolean {
+  try {
+    return new URL(value).origin === PRIVATE_LINEAR_UPLOAD_ORIGIN;
+  } catch {
+    return false;
+  }
+}
+
+export function buildAttachmentDownloadRequest(
+  url: URL,
+  apiKey: string
+): { headers: Record<string, string>; redirect?: 'error' } {
+  if (url.origin !== PRIVATE_LINEAR_UPLOAD_ORIGIN) {
+    return { headers: {} };
+  }
+
+  const token = apiKey.replace(/^(?:Bearer\s+)+/i, '').trim();
+  if (!token) {
+    return { headers: {} };
+  }
+
+  return {
+    headers: {
+      Authorization: token.startsWith('lin_api_') ? token : `Bearer ${token}`,
+    },
+    redirect: 'error',
+  };
+}
+
 function isImageLike(input: { url: string; contentType: string }): boolean {
   const url = input.url ?? '';
   const ct = normalizeContentType(input.contentType ?? '');
@@ -1828,7 +1906,7 @@ async function ensureSafeDownloadDir(dir: string): Promise<void> {
   }
 }
 
-async function downloadToDir(
+export async function downloadToDir(
   url: string,
   downloadDir: string,
   options: { overwrite: boolean; apiKey: string; suggestedBaseName: string; validateImage: boolean }
@@ -1850,14 +1928,12 @@ async function downloadToDir(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), DEFAULT_DOWNLOAD_TIMEOUT_MS);
   try {
-    const headers: Record<string, string> = {};
-    if (parsed.hostname === 'uploads.linear.app' && options.apiKey) {
-      headers['Authorization'] = options.apiKey.startsWith('Bearer ')
-        ? options.apiKey
-        : `Bearer ${options.apiKey}`;
-    }
-
-    const response = await fetch(parsed.toString(), { signal: controller.signal, headers });
+    const request = buildAttachmentDownloadRequest(parsed, options.apiKey);
+    const response = await fetch(parsed.toString(), {
+      signal: controller.signal,
+      headers: request.headers,
+      ...(request.redirect ? { redirect: request.redirect } : {}),
+    });
     if (!response.ok) {
       return {
         downloadPath: '',
@@ -1974,7 +2050,7 @@ async function chooseDownloadPath(
 
 function inferExtension(url: URL, contentType: string): string {
   const ext = path.extname(url.pathname).toLowerCase();
-  if (IMAGE_EXTENSIONS.has(ext)) return ext;
+  if (ext) return ext;
 
   const ct = normalizeContentType(contentType);
   switch (ct) {
@@ -1988,6 +2064,9 @@ function inferExtension(url: URL, contentType: string): string {
       return '.webp';
     case 'image/svg+xml':
       return '.svg';
+    case 'application/zip':
+    case 'application/x-zip-compressed':
+      return '.zip';
     default:
       return '';
   }

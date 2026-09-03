@@ -224,6 +224,32 @@ test('issues commands including relationships succeed', () => {
     });
     assertOk(result, 'issues attachments scan comments');
     assert.equal(readMockLog(attachmentsScanLog).counts.comments, 1);
+    const attachmentRows = JSON.parse(result.stdout.trim()).rows as Array<Record<string, string>>;
+    const privateAttachment = attachmentRows.find(row => row.url.startsWith('https://uploads.linear.app/'));
+    assert.ok(privateAttachment, 'expected a private Linear upload row');
+    assert.equal(privateAttachment.downloadAccess, 'ltui_authenticated');
+    assert.equal(
+      privateAttachment.downloadCommand,
+      'ltui issues attachments ENG-1 --download-dir ./.ltui-attachments/ENG-1'
+    );
+    const externalAttachment = attachmentRows.find(row => row.url === 'https://example.com');
+    assert.ok(externalAttachment, 'expected an external attachment row');
+    assert.equal(externalAttachment.downloadAccess, 'direct_url');
+    assert.equal(externalAttachment.downloadCommand, '');
+
+    result = runCli(ctx, ['--format', 'json', 'issues', 'attachments', 'ENG-1', '--scan-comments'], {
+      LTUI_MOCK_COMMENT_ONLY_IMAGE: '1',
+    });
+    const commentOnlyAttachmentRows = expectPureJsonOutput(result, 'comment-only issue attachments') as {
+      rows: Array<Record<string, string>>;
+    };
+    assert.equal(commentOnlyAttachmentRows.rows.length, 1);
+    assert.equal(commentOnlyAttachmentRows.rows[0].subtitle, 'comment:comment-1');
+    assert.equal(commentOnlyAttachmentRows.rows[0].downloadAccess, 'ltui_authenticated');
+    assert.equal(
+      commentOnlyAttachmentRows.rows[0].downloadCommand,
+      'ltui issues attachments ENG-1 --scan-comments --download-dir ./.ltui-attachments/ENG-1'
+    );
 
     const boundedCommentsLog = path.join(ctx.baseDir, 'bounded-comments-log.json');
     result = runCli(ctx, ['--format', 'json', 'issues', 'attachments', 'ENG-1', '--scan-comments', '--max-comments', '51'], {
@@ -667,6 +693,14 @@ test('issues list supports repeatable state filters and cheap issue views', () =
     });
     const normalView = expectPureJsonOutput(result, 'issues view explicit attachment probe') as Record<string, unknown>;
     assert.equal(normalView.imageAttachmentsFetchCmd, 'ltui --format json issues attachments ENG-1 --only-images');
+    assert.equal(
+      normalView.attachmentsDownloadCmd,
+      'ltui issues attachments ENG-1 --download-dir ./.ltui-attachments/ENG-1'
+    );
+    assert.equal(
+      normalView.attachmentsDownloadGuidance,
+      'Private Linear uploads require ltui download mode; use downloadPath from the attachment row.'
+    );
     const normalCounts = readMockLog(normalViewLog).counts;
     assert.ok(normalCounts.attachments > 0);
 
@@ -678,6 +712,19 @@ test('issues list supports repeatable state filters and cheap issue views', () =
     assert.equal(
       commentOnlyView.imageAttachmentsDownloadCmd,
       'ltui issues attachments ENG-1 --only-images --scan-comments --download-dir ./.ltui-attachments/ENG-1'
+    );
+    assert.equal(
+      commentOnlyView.attachmentsDownloadCmd,
+      'ltui issues attachments ENG-1 --scan-comments --download-dir ./.ltui-attachments/ENG-1'
+    );
+
+    result = runCli(ctx, ['--no-agent', '--format', 'json', 'issues', 'view', 'ENG-1'], {
+      LTUI_MOCK_EXTERNAL_IMAGE_WITH_COMMENT_UPLOAD: '1',
+    });
+    const mixedAttachmentView = expectPureJsonOutput(result, 'issues view mixed attachment hint') as Record<string, unknown>;
+    assert.equal(
+      mixedAttachmentView.attachmentsDownloadCmd,
+      'ltui issues attachments ENG-1 --scan-comments --download-dir ./.ltui-attachments/ENG-1'
     );
 
     const contextViewLog = path.join(ctx.baseDir, 'context-view-log.json');
